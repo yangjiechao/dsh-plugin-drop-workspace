@@ -11,13 +11,13 @@ Requires DeepSeek Harness `0.2.x` (declared as `engines.dsh: >=0.2.1-rc.3 <0.3.0
 **From GitHub** (no npm account needed). In the Web GUI open **Plugins → Add**, paste:
 
 ```
-github:<your-user>/dsh-plugin-drop-workspace
+github:yangjiechao/dsh-plugin-drop-workspace
 ```
 
 Or ask the agent to run the `plugin_manager` tool:
 
 ```
-install_bundle  target: "github:<your-user>/dsh-plugin-drop-workspace"
+install_bundle  target: "github:yangjiechao/dsh-plugin-drop-workspace"
 ```
 
 **From npm**, once published:
