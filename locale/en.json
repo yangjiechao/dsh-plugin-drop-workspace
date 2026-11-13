@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Drag a Folder to Add a Project",
+    "description": "Drop a folder anywhere on the page to register it as a project (Workspace) on the host machine."
+  }
+}
