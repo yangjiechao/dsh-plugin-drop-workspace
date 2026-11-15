@@ -37,11 +37,13 @@ Installing enables the bundle. If the host was already running with this bundle,
 ## Use
 
 1. Drag a folder from Finder (or Explorer) anywhere onto the page.
-2. A dashed drop target appears; release.
+2. A dashed drop target appears; release. If the browser hides the item type until drop, the invitation explains both outcomes: folders become projects; files and images become attachments.
 3. Harness looks the folder up on the host and, when the match is unambiguous, registers it and opens a new session.
 4. Otherwise a chooser lists the ranked candidates, with an absolute-path field and **Choose in system dialog…** as fallbacks.
 
-Only folder drags are claimed, and only in the window capture phase, so dropping **files** into the composer still goes to its attachment intake.
+External filesystem **hover** events are handled in the window capture phase, before the built-in attachment overlay can show an image-only invitation for a folder. The preview is pointer-transparent, so it does not change the actual drop target. At **drop**, only a single folder is claimed: ordinary files and images continue to DSH's attachment intake as the original, unmodified event. Text, links and DSH's internal image drags are not intercepted.
+
+<sub>拖入前若浏览器尚未提供目录信息，会显示“松开以识别拖入内容 / 文件夹新建项目，文件或图片添加为附件”。松手后才分流：单个文件夹新建项目；普通文件和图片仍作为附件，不会被误建成项目。更新插件后请刷新现有页面，清除旧拖拽状态。</sub>
 
 ## How the resolution works
 
@@ -57,7 +59,9 @@ A single candidate is adopted automatically when the dropped folder is empty or 
 - The scan is bounded: 24 000 directories, 1.6 s wall clock, skipping `node_modules`, `.git`, `Library`, build output and hidden directories. A partial answer reports `truncated`.
 - A folder named like an existing one elsewhere on the machine can produce several candidates — that is what the chooser is for.
 - Folders on volumes outside `$HOME` (for example an external disk) will usually need the chooser's path field or the system dialog.
-- Folder drops rely on `webkitGetAsEntry()`: Chrome, Edge and Safari work; Firefox exposes entries only at drop time, so the invitation overlay may not appear there (the drop itself still works).
+- Folder drops rely on `webkitGetAsEntry()`. Browsers may expose entries only at drop time (including protected drag-data modes in Chromium/WebKit); before then the invitation stays neutral instead of treating a missing entry as “not a folder”.
+- Drop **one project folder at a time**. Multiple folders, or a folder mixed with files, are rejected with an explicit message rather than silently ignoring extra items. Multiple ordinary file/image attachments still pass through together.
+- Finish or cancel an open project operation before dropping another project folder.
 
 ## Security and privacy
 
@@ -75,13 +79,25 @@ Read `index.js` and `search.js` before installing — they are small and do exac
 |---|---|
 | `index.js` | Host plugin: the resolve route, same-origin check, body limit |
 | `search.js` | Bounded candidate scan and ranking |
-| `client.js` | Client plugin: drop invitation, chooser, registration |
+| `client.js` | Shipped classic browser module: invitation, chooser, registration |
+| `drag-events.js` | React-independent event routing source, embedded into `client.js` |
+| `scripts/build-client.js` | Dependency-free inline build and stale-artifact check |
+| `tests/drag-events.test.js` | Event routing and cleanup regression tests |
 | `cordis.patch.yml` | Inserts the `drop-workspace` row |
 | `locale/{en,zh}.json` | Display metadata for the plugin list |
 
 ## Develop
 
-Plain ESM, no bundler. Edit `search.js` / `index.js`, then toggle the `drop-workspace` row (unload and reload picks up new host code). `client.js` is served by the host with a file-metadata revision, but a page refresh is the reliable way to see client changes.
+The package ships its generated `client.js`; installing it still needs no build or dependencies. To develop with Node.js 20+:
+
+```sh
+npm run build  # inline drag-events.js after editing it; commit client.js as well
+npm test       # check generated output, syntax and event-routing regressions
+```
+
+The tests cover protected-mode hover, drop-only directory entries, original file/image delivery, mixed payload rejection, cancellation and listener disposal. They are unit-level event tests, **not** a claim that Finder/Chrome/Safari has been visually exercised. After updating the installed plugin, refresh the existing Harness page and manually drag a folder and a PNG from Finder to confirm both paths.
+
+Edit `search.js` / `index.js`, then toggle the `drop-workspace` row (unload and reload picks up new host code). `client.js` is served by the host with a file-metadata revision, but a page refresh is the reliable way to see client changes.
 
 ## License
 

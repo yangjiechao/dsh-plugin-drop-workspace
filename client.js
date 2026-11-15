@@ -8,8 +8,8 @@
  * falls back to a typed path or the system directory dialog.
  *
  * It occupies `shell.overlay`, the frame-wide seat above every column, and
- * claims folder drags in the window capture phase so the composer's attachment
- * intake keeps its own file drops.
+ * owns external file-drag previews in the window capture phase. Only folder
+ * drops are consumed; ordinary drops keep the composer's attachment intake.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-plugin-drop-workspace',
@@ -34,6 +34,11 @@ window.__ModuleLoader__.load({
         'Drop a folder anywhere on the page to register it as a project (Workspace) on the host machine.',
       'drop.title': 'Drop to add a project',
       'drop.hint': 'Harness looks this folder up on the host machine',
+      'drop.pendingTitle': 'Release to identify the dragged content',
+      'drop.pendingHint': 'Folders become projects; files and images become attachments',
+      'error.multiple': 'Drop one project folder at a time; add files and images separately.',
+      'error.unreadable': 'The folder could not be read. Drag it in again or use Choose workspace.',
+      'error.busy': 'Finish or cancel the current project operation before dropping another folder.',
       'working.title': 'Locating “{name}”…',
       'working.hint': 'Searching your home directory and known project locations',
       'adding.title': 'Adding “{name}” as a project…',
@@ -63,6 +68,11 @@ window.__ModuleLoader__.load({
       'meta.description': '把文件夹拖到页面任意位置，即可在宿主机上把它添加为项目（工作区）。',
       'drop.title': '松开即可添加为新项目',
       'drop.hint': 'Harness 会在宿主机上查找这个文件夹',
+      'drop.pendingTitle': '松开以识别拖入内容',
+      'drop.pendingHint': '文件夹新建项目，文件或图片添加为附件',
+      'error.multiple': '一次请只拖入一个项目文件夹；文件或图片请单独添加。',
+      'error.unreadable': '无法读取这个文件夹，请重新拖入，或使用“选择工作区”。',
+      'error.busy': '请先完成或取消当前项目操作，再拖入其他文件夹。',
       'working.title': '正在查找“{name}”…',
       'working.hint': '搜索主目录与已知的项目位置',
       'adding.title': '正在添加“{name}”为项目…',
@@ -87,6 +97,7 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .dshdw-layer{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;pointer-events:auto}
+.dshdw-drag{pointer-events:none}
 .dshdw-backdrop{position:absolute;inset:0;background:var(--dsw-alias-bg-base);opacity:.78}
 .dshdw-target{position:relative;box-sizing:border-box;width:min(560px,100%);padding:38px 32px;border:2px dashed var(--dsw-alias-brand-primary);border-radius:16px;background:var(--dsw-alias-bg-overlay);display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;color:var(--dsw-alias-label-primary)}
 .dshdw-target svg{color:var(--dsw-alias-brand-primary)}
@@ -122,35 +133,149 @@ window.__ModuleLoader__.load({
 
     const STYLE_ELEMENT = h('style', null, CSS);
 
+    // BEGIN generated drag-events.js
     /**
-     * Read the first dropped item that is a directory.
-     * @param dataTransfer - the drag payload.
-     * @returns the directory entry, or null when the drag carries no folder.
+     * External filesystem drag routing. Kept independent of React and DSH so the
+     * protected-data-store and event propagation rules can be regression tested.
+     * scripts/build-client.js embeds this module in the shipped classic script.
      */
-    function folderEntryFrom(dataTransfer) {
-      if (!dataTransfer || !dataTransfer.items) return null;
-      for (const item of Array.from(dataTransfer.items)) {
-        if (!item || item.kind !== 'file') continue;
+
+    /** Read entries synchronously: the browser may revoke access after drop returns. */
+    function inspectTransfer(transfer) {
+      const folders = [];
+      let fileCount = 0;
+      for (const item of Array.from(transfer?.items ?? [])) {
+        if (item?.kind !== 'file') continue;
+        fileCount += 1;
         let entry = null;
         try {
-          entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+          entry = item.webkitGetAsEntry?.();
         } catch {
-          entry = null;
+          // An unavailable entry is unknown, never proof of an ordinary file.
         }
-        if (entry && entry.isDirectory === true) return entry;
+        if (entry?.isDirectory === true) folders.push(entry);
       }
-      return null;
+      return { folders, fileCount: Math.max(fileCount, transfer?.files?.length ?? 0) };
+    }
+
+    /** Do not interfere with text, links, or DSH's own retained-image drags. */
+    function isExternalFileTransfer(transfer) {
+      const types = Array.from(transfer?.types ?? []);
+      return types.includes('Files') && !types.includes('application/x-dsh-file');
     }
 
     /**
-     * Whether a drag claims file-like items at all.
-     * @param dataTransfer - the drag payload.
-     * @returns whether "Files" is among the drag types.
+     * Own the invitation for external file drags, not ordinary file drops.
+     * Before drop, even Chrome/Safari may hide directory entries. A neutral
+     * invitation prevents the built-in attachment overlay from opening and then
+     * missing the directory drop that we must consume. At drop, ordinary files
+     * continue as the ORIGINAL event, with their File objects untouched.
+     *
+     * @param target - the browser Window (an event target in unit tests).
+     * @param callbacks - preview, folder, rejection and cancellation callbacks.
+     * @returns disposal for exactly this installation's listeners.
      */
-    function hasFiles(dataTransfer) {
-      if (!dataTransfer || !dataTransfer.types) return false;
-      return Array.from(dataTransfer.types).indexOf('Files') !== -1;
+    function installProjectDropEvents(target, callbacks) {
+      let depth = 0;
+      let preview = null;
+
+      const publish = (next) => {
+        if (preview === next) return;
+        preview = next;
+        callbacks.onPreview(next);
+      };
+      const reset = () => {
+        depth = 0;
+        publish(null);
+      };
+      const claim = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      const showPreview = (transfer) => {
+        // Probe again rather than caching a negative result during protected mode.
+        const { folders } = inspectTransfer(transfer);
+        publish(folders.length > 0 || preview === 'folder' ? 'folder' : 'pending');
+      };
+      const onDragEnter = (event) => {
+        if (!isExternalFileTransfer(event.dataTransfer)) return;
+        claim(event);
+        depth += 1;
+        showPreview(event.dataTransfer);
+      };
+      const onDragOver = (event) => {
+        if (!isExternalFileTransfer(event.dataTransfer)) return;
+        claim(event);
+        depth = Math.max(1, depth);
+        event.dataTransfer.dropEffect = 'copy';
+        showPreview(event.dataTransfer);
+      };
+      const onDragLeave = (event) => {
+        // dragleave often has no readable DataTransfer. Use the active drag instead.
+        if (preview === null) return;
+        claim(event);
+        depth = Math.max(0, depth - 1);
+        const outside = event.clientX <= 0 || event.clientY <= 0
+          || event.clientX >= target.innerWidth || event.clientY >= target.innerHeight;
+        if (depth === 0 || (event.relatedTarget == null && outside)) reset();
+      };
+      const onDrop = (event) => {
+        const wasFolder = preview === 'folder';
+        reset();
+        if (!isExternalFileTransfer(event.dataTransfer)) return;
+        const { folders, fileCount } = inspectTransfer(event.dataTransfer);
+        if (folders.length === 0) {
+          if (wasFolder) {
+            claim(event);
+            callbacks.onReject('unreadable');
+          }
+          // No replay or synthetic drop: DSH receives the original ordinary files.
+          return;
+        }
+        claim(event);
+        if (folders.length !== 1 || fileCount !== 1) {
+          callbacks.onReject('multiple');
+        } else if (callbacks.canAcceptFolder && !callbacks.canAcceptFolder()) {
+          callbacks.onReject('busy');
+        } else {
+          callbacks.onFolderDrop(folders[0]);
+        }
+      };
+      const onKeyDown = (event) => {
+        if (event.key !== 'Escape') return;
+        if (callbacks.canCancel && !callbacks.canCancel()) return;
+        if (preview === null && !callbacks.hasFlow?.()) return;
+        claim(event);
+        reset();
+        callbacks.onCancel();
+      };
+      const onVisibilityChange = () => {
+        if (target.document?.hidden) reset();
+      };
+
+      const listeners = {
+        dragenter: onDragEnter,
+        dragover: onDragOver,
+        dragleave: onDragLeave,
+        drop: onDrop,
+        dragend: reset,
+        blur: reset,
+        keydown: onKeyDown,
+      };
+      for (const [type, listener] of Object.entries(listeners)) {
+        target.addEventListener(type, listener, true);
+      }
+      target.document?.addEventListener('visibilitychange', onVisibilityChange);
+      return () => {
+        for (const [type, listener] of Object.entries(listeners)) {
+          target.removeEventListener(type, listener, true);
+        }
+        target.document?.removeEventListener('visibilitychange', onVisibilityChange);
+        depth = 0;
+        preview = null;
+      };
     }
+    // END generated drag-events.js
 
     /**
      * Read one level of a dropped directory for its content signature.
@@ -316,8 +441,7 @@ window.__ModuleLoader__.load({
         const [view, setView] = useState(null);
         const [toast, setToast] = useState(null);
         const [localeRevision, setLocaleRevision] = useState(0);
-        const dragDepth = useRef(0);
-        const folderDrag = useRef('unknown');
+        const [dragPreview, setDragPreview] = useState(null);
         const busy = useRef(false);
         const runId = useRef(0);
         const toastTimer = useRef(null);
@@ -329,29 +453,6 @@ window.__ModuleLoader__.load({
         void localeRevision;
 
         const t = ctx.locale.bind(NS);
-
-        const resetDrag = useCallback(() => {
-          dragDepth.current = 0;
-          folderDrag.current = 'unknown';
-          setPhase((current) => (current === 'drag' ? 'idle' : current));
-        }, []);
-
-        /**
-         * Decide once per drag session whether the payload carries a folder.
-         * @param event - the drag event.
-         * @param force - recompute even when this session already decided.
-         * @returns whether this drag holds a directory.
-         */
-        const folderDragOf = useCallback((event, force) => {
-          if (!hasFiles(event.dataTransfer)) {
-            folderDrag.current = 'unknown';
-            return false;
-          }
-          if (!force && folderDrag.current !== 'unknown') return folderDrag.current === 'yes';
-          const isFolder = folderEntryFrom(event.dataTransfer) !== null;
-          folderDrag.current = isFolder ? 'yes' : 'no';
-          return isFolder;
-        }, []);
 
         const flash = useCallback((kind, title, detail) => {
           if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
@@ -370,8 +471,7 @@ window.__ModuleLoader__.load({
 
         const cancelFlow = useCallback(() => {
           runId.current += 1;
-          dragDepth.current = 0;
-          folderDrag.current = 'unknown';
+          setDragPreview(null);
           setView(null);
           setPhase('idle');
         }, []);
@@ -502,76 +602,40 @@ window.__ModuleLoader__.load({
           if (typeof picked === 'string' && picked !== '') await addPath(picked);
         }, [addPath]);
 
-        useEffect(() => {
-          const onDragEnter = (event) => {
-            if (!folderDragOf(event, true)) return;
-            event.preventDefault();
-            event.stopPropagation();
-            dragDepth.current += 1;
-            setPhase((current) => (current === 'idle' || current === 'drag' ? 'drag' : current));
-          };
-          const onDragOver = (event) => {
-            if (!folderDragOf(event, false)) return;
-            event.preventDefault();
-            event.stopPropagation();
-            if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-            setPhase((current) => (current === 'idle' ? 'drag' : current));
-          };
-          const onDragLeave = (event) => {
-            if (!folderDragOf(event, false)) return;
-            event.preventDefault();
-            event.stopPropagation();
-            dragDepth.current = Math.max(0, dragDepth.current - 1);
-            if (dragDepth.current === 0) resetDrag();
-          };
-          const onDrop = (event) => {
-            // Read the entry straight from the drop instead of the cached probe:
-            // a browser may only expose entries to the drop event itself.
-            const entry = folderEntryFrom(event.dataTransfer);
-            folderDrag.current = 'unknown';
-            if (entry === null) return;
-            event.preventDefault();
-            event.stopPropagation();
-            dragDepth.current = 0;
-            void handleDrop(entry);
-          };
-          const onDragEnd = () => resetDrag();
-          const onKeyDown = (event) => {
-            if (event.key !== 'Escape') return;
-            if (dragDepth.current === 0 && view === null) return;
-            if (busy.current) return;
-            cancelFlow();
-          };
-          window.addEventListener('dragenter', onDragEnter, true);
-          window.addEventListener('dragover', onDragOver, true);
-          window.addEventListener('dragleave', onDragLeave, true);
-          window.addEventListener('drop', onDrop, true);
-          window.addEventListener('dragend', onDragEnd, true);
-          window.addEventListener('keydown', onKeyDown, true);
-          return () => {
-            window.removeEventListener('dragenter', onDragEnter, true);
-            window.removeEventListener('dragover', onDragOver, true);
-            window.removeEventListener('dragleave', onDragLeave, true);
-            window.removeEventListener('drop', onDrop, true);
-            window.removeEventListener('dragend', onDragEnd, true);
-            window.removeEventListener('keydown', onKeyDown, true);
-          };
-        }, [cancelFlow, folderDragOf, handleDrop, resetDrag, view]);
+        const dropHandlers = useRef(null);
+        dropHandlers.current = {
+          onPreview: setDragPreview,
+          onFolderDrop: (entry) => { void handleDrop(entry); },
+          onReject: (reason) => flash('err', t(`error.${reason}`)),
+          canAcceptFolder: () => !busy.current && phase === 'idle',
+          canCancel: () => !busy.current,
+          hasFlow: () => view !== null,
+          onCancel: cancelFlow,
+        };
+        useEffect(() => installProjectDropEvents(window, {
+          onPreview: (preview) => dropHandlers.current.onPreview(preview),
+          onFolderDrop: (entry) => dropHandlers.current.onFolderDrop(entry),
+          onReject: (reason) => dropHandlers.current.onReject(reason),
+          canAcceptFolder: () => dropHandlers.current.canAcceptFolder(),
+          canCancel: () => dropHandlers.current.canCancel(),
+          hasFlow: () => dropHandlers.current.hasFlow(),
+          onCancel: () => dropHandlers.current.onCancel(),
+        }), []);
 
         const backdrop = h('div', { className: 'dshdw-backdrop', onClick: phase === 'choose' ? cancelFlow : undefined });
 
         let layer = null;
-        if (phase === 'drag') {
+        if (phase === 'idle' && dragPreview !== null) {
           layer = h(
             'div',
-            { className: 'dshdw-layer' },
+            { className: 'dshdw-layer dshdw-drag', role: 'status', 'aria-live': 'polite' },
             backdrop,
             h(
               'div',
               { className: 'dshdw-target' },
               h(FolderDropIcon),
-              h('div', { className: 'dshdw-title' }, t('drop.title')),
-              h('div', { className: 'dshdw-hint' }, t('drop.hint')),
+              h('div', { className: 'dshdw-title' }, t(dragPreview === 'folder' ? 'drop.title' : 'drop.pendingTitle')),
+              h('div', { className: 'dshdw-hint' }, t(dragPreview === 'folder' ? 'drop.hint' : 'drop.pendingHint')),
             ),
           );
         } else if (phase === 'working' || phase === 'adding') {

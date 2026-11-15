@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-drop-workspace",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Drop a folder anywhere on the DeepSeek Harness Web GUI to register it as a project (workspace) on the host machine.",
   "type": "module",
   "license": "MIT",
@@ -21,8 +21,16 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
+  "scripts": {
+    "build": "node scripts/build-client.js",
+    "check:build": "node scripts/build-client.js --check",
+    "test": "node scripts/build-client.js --check && node --check client.js && node --test"
+  },
   "files": [
     "index.js",
+    "drag-events.js",
+    "scripts/build-client.js",
+    "tests/drag-events.test.js",
     "search.js",
     "client.js",
     "cordis.patch.yml",
