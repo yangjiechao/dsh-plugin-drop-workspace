@@ -31,12 +31,14 @@
     "drag-events.js",
     "scripts/build-client.js",
     "tests/drag-events.test.js",
+    "tests/host.test.js",
     "search.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "COMPATIBILITY.md",
     "LICENSE"
   ],
   "dsh": {

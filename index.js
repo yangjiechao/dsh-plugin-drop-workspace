@@ -130,7 +130,12 @@ function readJsonBody(req) {
     });
     req.on('end', () => {
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          reject(new Error('invalid-json'));
+          return;
+        }
+        resolve(parsed);
       } catch {
         reject(new Error('invalid-json'));
       }

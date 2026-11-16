@@ -6,7 +6,7 @@ Drag a folder from Finder onto the [DeepSeek Harness](https://github.com/deepsee
 
 ## Install
 
-Requires DeepSeek Harness `0.2.x` (declared as `engines.dsh: >=0.2.1-rc.3 <0.3.0`) with the Web GUI. There is no build step — the package ships plain ESM plus a prebuilt browser module.
+Requires DeepSeek Harness `0.2.x` (declared as `engines.dsh: >=0.2.1-rc.3 <0.3.0`) with the Web GUI. There is no build step — the package ships plain ESM plus a prebuilt browser module. The 0.2.2-rc.3 source compatibility review does not raise the minimum; see [compatibility evidence and verification limits](./COMPATIBILITY.md).
 
 **From GitHub** (no npm account needed). In the Web GUI open **Plugins → Add**, paste:
 
